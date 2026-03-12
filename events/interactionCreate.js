@@ -87,6 +87,22 @@ export default {
         }
 
         const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
+
+        // ── Check if they actually have the unverified role ──────────────────────
+        if (!unverifiedRoleId) {
+          return interaction.reply({
+            content: `❌ The **UNVERIFIED_ROLE_ID** is not set in \`.env\`.`,
+            ephemeral: true
+          });
+        }
+
+        if (!targetMember.roles.cache.has(unverifiedRoleId)) {
+          return interaction.reply({
+            content: '❌ This user has already been verified!',
+            ephemeral: true
+          });
+        }
+
         const assignRoleId = isAssociate ? process.env.ASSOCIATE_ROLE_ID : process.env.OUTSIDER_ROLE_ID;
         const assignLabel  = isAssociate ? 'Associate' : 'Outsider';
         const assignEmoji  = isAssociate ? '🤝' : '👤';
@@ -101,9 +117,7 @@ export default {
 
         try {
           await targetMember.roles.add([assignRoleId], `Verified as ${assignLabel} by ${interaction.user.tag}`);
-          if (unverifiedRoleId && targetMember.roles.cache.has(unverifiedRoleId)) {
-            await targetMember.roles.remove([unverifiedRoleId], 'Verification complete');
-          }
+          await targetMember.roles.remove([unverifiedRoleId], 'Verification complete');
         } catch (err) {
           console.error('[VERIFY] Role update failed:', err.message);
           return interaction.reply({
@@ -122,7 +136,7 @@ export default {
           .addFields(
             { name: 'Role Assigned', value: `<@&${assignRoleId}>`,                              inline: true },
             { name: 'Verified By',   value: `${interaction.user}`,                              inline: true },
-            { name: 'Role Removed',  value: unverifiedRoleId ? `<@&${unverifiedRoleId}>` : 'N/A', inline: true },
+            { name: 'Role Removed',  value: `<@&${unverifiedRoleId}>`,                          inline: true },
           )
           .setThumbnail(targetMember.user.displayAvatarURL({ dynamic: true }))
           .setTimestamp()
@@ -163,8 +177,7 @@ export default {
       }
 
       // ── Snake game buttons ─────────────────────────────────────────────────────
-      const snakeButtons = ['snake_up', 'snake_down', 'snake_left', 'snake_right', 'snake_stop'];
-      if (snakeButtons.includes(customId)) {
+      if (['snake_up', 'snake_down', 'snake_left', 'snake_right', 'snake_stop'].includes(customId)) {
         const game = client.snakeGames?.get(interaction.message.id);
         if (!game) {
           return interaction.reply({
@@ -180,9 +193,8 @@ export default {
           });
         }
 
-        // Stop button — kill the loop, clear the TIMEOUT, and end the game
         if (customId === 'snake_stop') {
-          game.gameOver = true; // <-- This instantly kills the recursive loop!
+          game.gameOver = true;
           clearTimeout(game.timeoutId);
           client.snakeGames.delete(interaction.message.id);
           return interaction.update({
