@@ -10,7 +10,6 @@ import {
 } from 'discord.js';
 import { queueDirection, renderBoard } from '../utils/snakeGame.js';
 
-// Helper Function: Parse Time Strings
 function parseDuration(str) {
   if (!str) return null;
   const match = str.match(/^(\d+)(s|m|h|d)$/i);
@@ -25,7 +24,6 @@ function parseDuration(str) {
   return null;
 }
 
-// Helper Function: Strip all special characters and spaces for smart fuzzy search
 function normalizeName(str) {
   return str.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
@@ -82,13 +80,9 @@ export default {
   name: 'interactionCreate',
   async execute(interaction, client) {
     
-    // ════════════════════════════════════════════════════════════════════════════
-    // 🔘 BUTTON INTERACTIONS
-    // ════════════════════════════════════════════════════════════════════════════
     if (interaction.isButton()) {
       const { customId } = interaction;
 
-      // ── UNMUTE BUTTONS ───────────────────────────────────────────
       if (customId.startsWith('unmute_cancel_')) {
         const authorId = customId.replace('unmute_cancel_', '');
         if (interaction.user.id !== authorId) return interaction.reply({ content: '❌ Not your command.', ephemeral: true });
@@ -117,16 +111,13 @@ export default {
         return await interaction.showModal(modal);
       }
 
-      // ── MODERATOR POPUP GENERATOR ───────────────────────────────────────────
       if (customId.startsWith('mod_')) {
         const parts = customId.split('_');
         const cmd = parts[1];
         const targetId = parts[2];
         const authorId = parts[3];
 
-        if (interaction.user.id !== authorId) {
-          return interaction.reply({ content: '❌ Only the person who ran the command can use this button.', ephemeral: true });
-        }
+        if (interaction.user.id !== authorId) return interaction.reply({ content: '❌ Not your command.', ephemeral: true });
 
         const modal = new ModalBuilder()
           .setCustomId(`modal_mod_${cmd}_${targetId}`)
@@ -156,14 +147,10 @@ export default {
         return await interaction.showModal(modal);
       }
 
-      // ── Verify Prompt button ──────────────────────────────────────────────────
       if (customId.startsWith('verify_prompt_')) {
-        if (!interaction.member.permissions.has('ManageRoles')) {
-          return interaction.reply({ content: '❌ You need the **Manage Roles** permission to verify members.', ephemeral: true });
-        }
+        if (!interaction.member.permissions.has('ManageRoles')) return interaction.reply({ content: '❌ You need the **Manage Roles** permission to verify members.', ephemeral: true });
 
         const memberId = customId.replace('verify_prompt_', '');
-
         const modal = new ModalBuilder()
           .setCustomId(`modal_verify_prompt_${memberId}`)
           .setTitle(`Verify Member`);
@@ -180,7 +167,6 @@ export default {
         return await interaction.showModal(modal);
       }
 
-      // ── Kick / Ban buttons ──────────────────────────────────────────────────────
       if (customId.startsWith('verify_kick_') || customId.startsWith('verify_ban_')) {
         if (!interaction.member.permissions.has('ManageRoles')) return interaction.reply({ content: '❌ You need the **Manage Roles** permission to do this.', ephemeral: true });
 
@@ -203,7 +189,6 @@ export default {
         return await interaction.showModal(modal);
       }
 
-      // ── Snake game buttons ─────────────────────────────────────────────────────
       if (['snake_up', 'snake_down', 'snake_left', 'snake_right', 'snake_stop'].includes(customId)) {
         const game = client.snakeGames?.get(interaction.message.id);
         if (!game) return interaction.reply({ content: '❌ This game has expired.', ephemeral: true });
@@ -221,9 +206,6 @@ export default {
       }
     }
 
-    // ════════════════════════════════════════════════════════════════════════════
-    // 📝 MODAL SUBMIT INTERACTIONS
-    // ════════════════════════════════════════════════════════════════════════════
     if (interaction.isModalSubmit()) {
       const { customId } = interaction;
 
@@ -232,20 +214,17 @@ export default {
         const query = interaction.fields.getTextInputValue('search_input');
         const searchNormalized = normalizeName(query);
 
-        await interaction.guild.members.fetch();
+        // Targeted fetch to avoid Rate Limits
+        await interaction.guild.members.fetch({ query, limit: 30 }).catch(() => {});
         const mutedMembers = interaction.guild.members.cache.filter(m => m.isCommunicationDisabled());
 
-        // Fuzzy match logic: check if inputted stripped string exists in stripped username or display name
         const targetMember = mutedMembers.find(m => 
           normalizeName(m.user.username).includes(searchNormalized) || 
-          normalizeName(m.displayName).includes(searchNormalized)
+          (m.displayName && normalizeName(m.displayName).includes(searchNormalized))
         );
 
         if (!targetMember) {
-          return interaction.reply({ 
-            content: `❌ Could not find a currently muted user matching \`${query}\`.`, 
-            ephemeral: true 
-          });
+          return interaction.reply({ content: `❌ Could not find a currently muted user matching \`${query}\`.`, ephemeral: true });
         }
 
         try {
@@ -262,8 +241,6 @@ export default {
 
         await interaction.message?.delete().catch(() => {});
         const replyMsg = await interaction.reply({ embeds: [embed], fetchReply: true });
-        
-        // Auto-delete success embed after 25s
         setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
         return;
       }
@@ -281,23 +258,17 @@ export default {
         if (cmd !== 'warn') {
           durationStr = interaction.fields.getTextInputValue('duration_input').trim();
           ms = parseDuration(durationStr);
-          if (!ms) {
-            return interaction.reply({ content: '❌ Invalid duration format! Use something like `10m`, `1h`, or `1d`.', ephemeral: true });
-          }
+          if (!ms) return interaction.reply({ content: '❌ Invalid duration format! Use `10m`, `1h`, etc.', ephemeral: true });
         }
 
         let targetMember;
-        try {
-          targetMember = await interaction.guild.members.fetch(targetId);
-        } catch {
+        try { targetMember = await interaction.guild.members.fetch(targetId); } catch {
           await interaction.message?.delete().catch(() => {});
           return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
         }
 
-        // WARN LOGIC
         if (cmd === 'warn') {
           try { await targetMember.send(`⚠️ You have been **warned** in **${interaction.guild.name}**.\n**Reason:** ${reason}`); } catch {}
-
           const embed = new EmbedBuilder()
             .setTitle('⚠️ User Warned')
             .setDescription(`**${targetMember.user.tag}** has been warned by ${interaction.user}.\n**Reason:** ${reason}`)
@@ -306,11 +277,10 @@ export default {
           
           await interaction.message?.delete().catch(() => {});
           const replyMsg = await interaction.reply({ embeds: [embed], fetchReply: true });
-          setTimeout(() => replyMsg.delete().catch(() => {}), 25000); // 25s delete
+          setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
           return;
         }
 
-        // BAN / MUTE / KICK LOGIC
         const dmEmbed = new EmbedBuilder()
           .setTitle(`You were ${cmd}ed in ${interaction.guild.name}`)
           .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
@@ -324,17 +294,14 @@ export default {
 
         try {
           const auditReason = `[Manager ${cmd}] by ${interaction.user.tag} | Time: ${durationStr} | Reason: ${reason}`;
-          
-          if (cmd === 'mute') {
-            await targetMember.timeout(ms, auditReason);
-          } else if (cmd === 'kick') {
-            await targetMember.kick(auditReason);
-          } else if (cmd === 'ban') {
+          if (cmd === 'mute') await targetMember.timeout(ms, auditReason);
+          else if (cmd === 'kick') await targetMember.kick(auditReason);
+          else if (cmd === 'ban') {
             await targetMember.ban({ reason: auditReason });
             setTimeout(() => { interaction.guild.members.unban(targetMember.id).catch(() => {}); }, ms);
           }
         } catch (err) {
-          return interaction.reply({ content: `❌ Failed to ${cmd} the user. Check my role hierarchy.`, ephemeral: true });
+          return interaction.reply({ content: `❌ Failed to ${cmd} the user.`, ephemeral: true });
         }
 
         const confirmEmbed = new EmbedBuilder()
@@ -349,7 +316,7 @@ export default {
 
         await interaction.message?.delete().catch(() => {});
         const replyMsg = await interaction.reply({ embeds: [confirmEmbed], fetchReply: true });
-        setTimeout(() => replyMsg.delete().catch(() => {}), 25000); // 25s delete
+        setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
         return;
       }
 
@@ -358,9 +325,7 @@ export default {
         const memberId = customId.replace('modal_verify_prompt_', '');
         const roleChoice = interaction.fields.getTextInputValue('role_input').trim().toLowerCase();
 
-        if (roleChoice !== 'associate' && roleChoice !== 'outsider') {
-          return interaction.reply({ content: '❌ Invalid input. Type exactly `associate` or `outsider`.', ephemeral: true });
-        }
+        if (roleChoice !== 'associate' && roleChoice !== 'outsider') return interaction.reply({ content: '❌ Invalid input. Type exactly `associate` or `outsider`.', ephemeral: true });
 
         let targetMember;
         try { targetMember = await interaction.guild.members.fetch(memberId); } catch {
@@ -369,7 +334,6 @@ export default {
         }
 
         const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
-
         if (!unverifiedRoleId) return interaction.reply({ content: `❌ The **UNVERIFIED_ROLE_ID** is not set.`, ephemeral: true });
         if (!targetMember.roles.cache.has(unverifiedRoleId)) return interaction.reply({ content: '❌ This user has already been verified!', ephemeral: true });
 
