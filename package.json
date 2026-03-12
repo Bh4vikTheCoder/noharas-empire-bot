@@ -1,0 +1,14 @@
+{
+  "name": "discord-verify-bot",
+  "version": "1.0.0",
+  "description": "Discord verification bot — assign Associate or Outsider roles on approval.",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.25.1",
+    "dotenv": "^17.3.1"
+  }
+}
