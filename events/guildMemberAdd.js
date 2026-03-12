@@ -24,12 +24,7 @@ export default {
       .setTitle('🔔 New Member Pending For Verification')
       .setDescription(
         `${member} Welcome To Th\n\n` +
-        `**To verify them, as a Staff Or A Ceo, You must type:**\n` +
-        `\`\`\`\n` +
-        `verify @${member.user.username} associate\n` +
-        `  — or —\n` +
-        `verify @${member.user.username} outsider\n` +
-        `\`\`\``
+        `**Please use the buttons below to verify or moderate this user.**`
       )
       .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
       .setColor(0x5865f2)
@@ -40,17 +35,20 @@ export default {
       .setTimestamp()
       .setFooter({ text: `${member.guild.name} Verification System` });
 
-    // ── Kick / Ban buttons — store member ID in customId so we know who to action ──
+    // ── Verification & Moderation Buttons ────────────────────────────────────
     const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`verify_prompt_${member.id}`)
+        .setLabel('Verify')
+        .setEmoji('✅')
+        .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(`verify_kick_${member.id}`)
         .setLabel('Kick')
-        // .setEmoji('👢') // Temporarily commented out to test for encoding issues
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`verify_ban_${member.id}`)
         .setLabel('Ban')
-        // .setEmoji('🔨') // Temporarily commented out to test for encoding issues
         .setStyle(ButtonStyle.Danger),
     );
 
@@ -66,7 +64,6 @@ export default {
 
       console.log(`[VERIFY] Join alert sent for ${member.user.tag}`);
     } catch (error) {
-      // If Discord rejects the buttons, this will tell us exactly why!
       console.error('[VERIFY ERROR] Failed to send the join alert message:', error);
     }
   },
