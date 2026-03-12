@@ -1,8 +1,4 @@
 // src/events/messageCreate.js
-// Handles:
-//   verify @user associate / outsider  — verification system
-//   play snake                         — starts a snake game
-
 import { EmbedBuilder } from 'discord.js';
 import { createGame }   from '../utils/snakeGame.js';
 import { buildEmbed, buildControls } from './interactionCreate.js';
@@ -32,14 +28,16 @@ export default {
       if (!client.snakeGames) client.snakeGames = new Map();
       client.snakeGames.set(sent.id, game);
 
-      // ── Auto-move the snake every 1.5 seconds ──────────────────────────────
       const { step } = await import('../utils/snakeGame.js');
 
-      game.intervalId = setInterval(async () => {
+      // ── Recursive loop to prevent API rate limit overlapping ───────────────
+      const gameTick = async () => {
+        if (game.gameOver) return;
+
         step(game);
 
         if (game.gameOver) {
-          clearInterval(game.intervalId);
+          clearTimeout(game.timeoutId);
           client.snakeGames.delete(sent.id);
           await sent.edit({
             content: `🎮 **${message.author.username}'s Snake Game**`,
@@ -49,27 +47,34 @@ export default {
           return;
         }
 
-        await sent.edit({
-          embeds: [buildEmbed(game)],
-          components: buildControls(),
-        }).catch(() => {});
-      }, 1000);
+        // Only attempt to edit if we aren't already waiting for Discord to process the last edit
+        if (!game.isEditing) {
+          game.isEditing = true;
+          await sent.edit({
+            embeds: [buildEmbed(game)],
+            components: buildControls(),
+          }).catch(() => {});
+          game.isEditing = false;
+        }
 
+        // Schedule next tick at 1.5 seconds (safe zone for Discord API)
+        if (!game.gameOver) {
+          game.timeoutId = setTimeout(gameTick, 1500);
+        }
+      };
+
+      game.timeoutId = setTimeout(gameTick, 1500);
       return;
     }
 
     // ════════════════════════════════════════════════════════════════════════════
     // ✅  VERIFICATION
     // ════════════════════════════════════════════════════════════════════════════
-
-    // Only process verify commands
     if (!lower.startsWith('verify')) return;
 
-    // Only process in the verification channel
     const verifyChannelId = process.env.VERIFICATION_CHANNEL_ID;
     if (verifyChannelId && message.channel.id !== verifyChannelId) return;
 
-    // Parse: verify @mention associate|outsider
     const pattern = /^verify\s+<@!?(\d+)>\s+(associate|outsider)$/i;
     const match   = content.match(pattern);
 
@@ -84,13 +89,11 @@ export default {
 
     const [, targetId, roleKeyword] = match;
 
-    // Sender must have Manage Roles permission
     if (!message.member.permissions.has('ManageRoles')) {
       return message.reply({ content: '❌ You need the **Manage Roles** permission to verify members.' })
         .then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
     }
 
-    // Fetch target member
     let targetMember;
     try {
       targetMember = await message.guild.members.fetch(targetId);
@@ -142,17 +145,13 @@ export default {
     const successMsg = await message.channel.send({ embeds: [embed] });
     setTimeout(() => successMsg.delete().catch(() => {}), 30_000);
 
-    // Delete the staff verify command message after 30s
     setTimeout(() => message.delete().catch(() => {}), 30_000);
 
-    // Delete the original join alert for this member
     if (client.pendingVerifications?.has(targetMember.id)) {
       const alertMessageId = client.pendingVerifications.get(targetMember.id);
       const alertMessage   = await message.channel.messages.fetch(alertMessageId).catch(() => null);
       if (alertMessage) await alertMessage.delete().catch(() => {});
       client.pendingVerifications.delete(targetMember.id);
     }
-
-    console.log(`[VERIFY] ${targetMember.user.tag} verified as ${assignLabel} by ${message.author.tag}`);
   },
 };
