@@ -68,85 +68,30 @@ export default {
     if (interaction.isButton()) {
       const { customId } = interaction;
 
-      // ── Associate / Outsider buttons ──────────────────────────────────────────
-      if (customId.startsWith('verify_associate_') || customId.startsWith('verify_outsider_')) {
+      // ── Verify Prompt button ──────────────────────────────────────────────────
+      if (customId.startsWith('verify_prompt_')) {
         if (!interaction.member.permissions.has('ManageRoles')) {
           return interaction.reply({ content: '❌ You need the **Manage Roles** permission to verify members.', ephemeral: true });
         }
 
-        const isAssociate = customId.startsWith('verify_associate_');
-        const memberId = customId.replace(isAssociate ? 'verify_associate_' : 'verify_outsider_', '');
-        
-        let targetMember;
-        try {
-          targetMember = await interaction.guild.members.fetch(memberId);
-        } catch {
-          await interaction.message?.delete().catch(() => {});
-          if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
-          return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
-        }
+        const memberId = customId.replace('verify_prompt_', '');
 
-        const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_verify_prompt_${memberId}`)
+          .setTitle(`Verify Member`);
 
-        // ── Check if they actually have the unverified role ──────────────────────
-        if (!unverifiedRoleId) {
-          return interaction.reply({
-            content: `❌ The **UNVERIFIED_ROLE_ID** is not set in \`.env\`.`,
-            ephemeral: true
-          });
-        }
+        const roleInput = new TextInputBuilder()
+          .setCustomId('role_input')
+          .setLabel("Type 'associate' or 'outsider'")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(20)
+          .setPlaceholder(`associate / outsider`);
 
-        if (!targetMember.roles.cache.has(unverifiedRoleId)) {
-          return interaction.reply({
-            content: '❌ This user has already been verified!',
-            ephemeral: true
-          });
-        }
+        const actionRow = new ActionRowBuilder().addComponents(roleInput);
+        modal.addComponents(actionRow);
 
-        const assignRoleId = isAssociate ? process.env.ASSOCIATE_ROLE_ID : process.env.OUTSIDER_ROLE_ID;
-        const assignLabel  = isAssociate ? 'Associate' : 'Outsider';
-        const assignEmoji  = isAssociate ? '🤝' : '👤';
-        const assignColour = isAssociate ? 0x57f287 : 0xfee75c;
-
-        if (!assignRoleId) {
-          return interaction.reply({
-            content: `❌ The **${assignLabel}** role ID is not set in \`.env\`.`,
-            ephemeral: true
-          });
-        }
-
-        try {
-          await targetMember.roles.add([assignRoleId], `Verified as ${assignLabel} by ${interaction.user.tag}`);
-          await targetMember.roles.remove([unverifiedRoleId], 'Verification complete');
-        } catch (err) {
-          console.error('[VERIFY] Role update failed:', err.message);
-          return interaction.reply({
-            content: '❌ Failed to update roles. Make sure my role is **above** the roles I need to assign in Server Settings → Roles.',
-            ephemeral: true
-          });
-        }
-
-        if (interaction.message) await interaction.message.delete().catch(() => {});
-        if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
-
-        const embed = new EmbedBuilder()
-          .setTitle(`${assignEmoji} Member Verified`)
-          .setDescription(`${targetMember} has been verified as **${assignLabel}**.`)
-          .setColor(assignColour)
-          .addFields(
-            { name: 'Role Assigned', value: `<@&${assignRoleId}>`,                              inline: true },
-            { name: 'Verified By',   value: `${interaction.user}`,                              inline: true },
-            { name: 'Role Removed',  value: `<@&${unverifiedRoleId}>`,                          inline: true },
-          )
-          .setThumbnail(targetMember.user.displayAvatarURL({ dynamic: true }))
-          .setTimestamp()
-          .setFooter({ text: `${interaction.guild.name} Verification System` });
-
-        await interaction.reply({ embeds: [embed] });
-        setTimeout(async () => {
-          await interaction.deleteReply().catch(() => {});
-        }, 30_000);
-        return;
+        return await interaction.showModal(modal);
       }
 
       // ── Kick / Ban buttons ──────────────────────────────────────────────────────
@@ -216,6 +161,93 @@ export default {
     if (interaction.isModalSubmit()) {
       const { customId } = interaction;
 
+      // ── Verify Prompt Submit ──────────────────────────────────────────────────
+      if (customId.startsWith('modal_verify_prompt_')) {
+        const memberId = customId.replace('modal_verify_prompt_', '');
+        const roleChoice = interaction.fields.getTextInputValue('role_input').trim().toLowerCase();
+
+        // Validate the input
+        if (roleChoice !== 'associate' && roleChoice !== 'outsider') {
+          return interaction.reply({ 
+            content: '❌ Invalid input. You must type exactly `associate` or `outsider`. Please click the Verify button and try again.', 
+            ephemeral: true 
+          });
+        }
+
+        let targetMember;
+        try {
+          targetMember = await interaction.guild.members.fetch(memberId);
+        } catch {
+          await interaction.message?.delete().catch(() => {});
+          if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
+          return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
+        }
+
+        const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
+
+        // Security check: Must hold the unverified role
+        if (!unverifiedRoleId) {
+          return interaction.reply({
+            content: `❌ The **UNVERIFIED_ROLE_ID** is not set in \`.env\`.`,
+            ephemeral: true
+          });
+        }
+
+        if (!targetMember.roles.cache.has(unverifiedRoleId)) {
+          return interaction.reply({
+            content: '❌ This user has already been verified!',
+            ephemeral: true
+          });
+        }
+
+        const isAssociate  = roleChoice === 'associate';
+        const assignRoleId = isAssociate ? process.env.ASSOCIATE_ROLE_ID : process.env.OUTSIDER_ROLE_ID;
+        const assignLabel  = isAssociate ? 'Associate' : 'Outsider';
+        const assignEmoji  = isAssociate ? '🤝' : '👤';
+        const assignColour = isAssociate ? 0x57f287 : 0xfee75c;
+
+        if (!assignRoleId) {
+          return interaction.reply({
+            content: `❌ The **${assignLabel}** role ID is not set in \`.env\`.`,
+            ephemeral: true
+          });
+        }
+
+        try {
+          await targetMember.roles.add([assignRoleId], `Verified as ${assignLabel} by ${interaction.user.tag}`);
+          await targetMember.roles.remove([unverifiedRoleId], 'Verification complete');
+        } catch (err) {
+          console.error('[VERIFY] Role update failed:', err.message);
+          return interaction.reply({
+            content: '❌ Failed to update roles. Make sure my role is **above** the roles I need to assign in Server Settings → Roles.',
+            ephemeral: true
+          });
+        }
+
+        if (interaction.message) await interaction.message.delete().catch(() => {});
+        if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
+
+        const embed = new EmbedBuilder()
+          .setTitle(`${assignEmoji} Member Verified`)
+          .setDescription(`${targetMember} has been verified as **${assignLabel}**.`)
+          .setColor(assignColour)
+          .addFields(
+            { name: 'Role Assigned', value: `<@&${assignRoleId}>`,                              inline: true },
+            { name: 'Verified By',   value: `${interaction.user}`,                              inline: true },
+            { name: 'Role Removed',  value: `<@&${unverifiedRoleId}>`,                          inline: true },
+          )
+          .setThumbnail(targetMember.user.displayAvatarURL({ dynamic: true }))
+          .setTimestamp()
+          .setFooter({ text: `${interaction.guild.name} Verification System` });
+
+        await interaction.reply({ embeds: [embed] });
+        setTimeout(async () => {
+          await interaction.deleteReply().catch(() => {});
+        }, 30_000);
+        return;
+      }
+
+      // ── Kick / Ban Submit ──────────────────────────────────────────────────────
       if (customId.startsWith('modal_verify_kick_') || customId.startsWith('modal_verify_ban_')) {
         const action   = customId.startsWith('modal_verify_kick_') ? 'kick' : 'ban';
         const memberId = customId.replace(`modal_verify_${action}_`, '');
