@@ -268,7 +268,81 @@ export default {
         return message.reply({ embeds: [embed] });
       }
 
-      // ── Trigger the Setup Button for Ban, Warn, Mute, Kick
+      // ── HYBRID LOGIC: INSTANT EXECUTION ──
+      // If they provided the required arguments in the text command, skip the popup!
+      
+      // Warn: Needs at least 1 extra argument (the reason)
+      if (cmd === 'warn' && args.length > 0) {
+        const reason = args.join(' ');
+        
+        try {
+          await targetMember.send(`⚠️ You have been **warned** in **${message.guild.name}**.\n**Reason:** ${reason}`);
+        } catch {}
+
+        const embed = new EmbedBuilder()
+          .setTitle('⚠️ User Warned')
+          .setDescription(`**${targetMember.user.tag}** has been warned by ${message.author}.\n**Reason:** ${reason}`)
+          .setColor(0xfee75c)
+          .setTimestamp();
+        
+        return message.reply({ embeds: [embed] });
+      }
+
+      // Ban / Mute / Kick: Needs at least 2 extra arguments (duration and reason)
+      if (['ban', 'mute', 'kick'].includes(cmd) && args.length >= 2) {
+        const durationStr = args[0];
+        const ms = parseDuration(durationStr);
+        
+        // Only proceed instantly if they provided a valid duration format
+        if (ms) {
+          const reason = args.slice(1).join(' ');
+
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`You were ${cmd}ed in ${message.guild.name}`)
+            .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
+            .addFields(
+              { name: 'Duration', value: durationStr, inline: true },
+              { name: 'Reason', value: reason, inline: true }
+            )
+            .setTimestamp();
+          
+          try { await targetMember.send({ embeds: [dmEmbed] }); } catch {}
+
+          try {
+            const auditReason = `[Manager ${cmd}] by ${message.author.tag} | Time: ${durationStr} | Reason: ${reason}`;
+            
+            if (cmd === 'mute') {
+              await targetMember.timeout(ms, auditReason);
+            } else if (cmd === 'kick') {
+              await targetMember.kick(auditReason);
+            } else if (cmd === 'ban') {
+              await targetMember.ban({ reason: auditReason });
+              setTimeout(() => {
+                message.guild.members.unban(targetMember.id, "Temp-ban duration expired").catch(() => {});
+              }, ms);
+            }
+          } catch (err) {
+            return message.reply(`❌ Failed to ${cmd} the user. Check my role hierarchy in Server Settings.`);
+          }
+
+          const confirmEmbed = new EmbedBuilder()
+            .setTitle(`✅ User ${cmd.charAt(0).toUpperCase() + cmd.slice(1)}ed`)
+            .setDescription(`**${targetMember.user.tag}** has been ${cmd}ed by ${message.author}.`)
+            .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
+            .addFields(
+              { name: 'Duration', value: durationStr, inline: true },
+              { name: 'Reason', value: reason, inline: true }
+            )
+            .setTimestamp();
+
+          return message.reply({ embeds: [confirmEmbed] });
+        }
+      }
+
+      // ── HYBRID LOGIC: BUTTON FALLBACK ──
+      // If we reach this point, it means they DID NOT provide full arguments, 
+      // so we send the button to open the popup instead!
+      
       const customId = `mod_${cmd}_${targetMember.id}_${message.author.id}`;
       
       const row = new ActionRowBuilder().addComponents(
@@ -284,7 +358,6 @@ export default {
         components: [row]
       });
 
-      // Cleanup the prompt if they don't click it within 60 seconds
       setTimeout(() => promptMsg.delete().catch(() => {}), 60000);
     }
   },
