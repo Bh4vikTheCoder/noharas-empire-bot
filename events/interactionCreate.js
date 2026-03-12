@@ -4,6 +4,9 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } from 'discord.js';
 import { queueDirection, renderBoard } from '../utils/snakeGame.js';
 
@@ -58,97 +61,152 @@ export function buildEmbed(game, stopped = false) {
 export default {
   name: 'interactionCreate',
   async execute(interaction, client) {
-    if (!interaction.isButton()) return;
+    
+    // ════════════════════════════════════════════════════════════════════════════
+    // 🔘 BUTTON INTERACTIONS
+    // ════════════════════════════════════════════════════════════════════════════
+    if (interaction.isButton()) {
+      const { customId } = interaction;
 
-    const { customId } = interaction;
-
-    // ── Kick / Ban buttons from the join verification alert ───────────────────
-    if (customId.startsWith('verify_kick_') || customId.startsWith('verify_ban_')) {
-      // Only members with Manage Roles permission can use these
-      if (!interaction.member.permissions.has('ManageRoles')) {
-        return interaction.reply({ content: '❌ You need the **Manage Roles** permission to do this.', ephemeral: true });
-      }
-
-      const action   = customId.startsWith('verify_kick_') ? 'kick' : 'ban';
-      const memberId = customId.replace('verify_kick_', '').replace('verify_ban_', '');
-
-      let target;
-      try {
-        target = await interaction.guild.members.fetch(memberId);
-      } catch {
-        // Member already left — just clean up the alert message
-        await interaction.message.delete().catch(() => {});
-        if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
-        return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
-      }
-
-      try {
-        if (action === 'kick') {
-          await target.kick(`Kicked from verification by ${interaction.user.tag}`);
-        } else {
-          await target.ban({ reason: `Banned from verification by ${interaction.user.tag}` });
+      // ── Kick / Ban buttons from the join verification alert ───────────────────
+      if (customId.startsWith('verify_kick_') || customId.startsWith('verify_ban_')) {
+        // Only members with Manage Roles permission can use these
+        if (!interaction.member.permissions.has('ManageRoles')) {
+          return interaction.reply({ content: '❌ You need the **Manage Roles** permission to do this.', ephemeral: true });
         }
-      } catch (err) {
-        return interaction.reply({ content: `❌ Failed to ${action} the member. Check my role position.`, ephemeral: true });
+
+        const action   = customId.startsWith('verify_kick_') ? 'kick' : 'ban';
+        const memberId = customId.replace(`verify_${action}_`, '');
+
+        // 1. Create the Modal
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_verify_${action}_${memberId}`)
+          .setTitle(`Reason for ${action === 'kick' ? 'Kick' : 'Ban'}`);
+
+        // 2. Create the Text Input
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('reason_input')
+          .setLabel("Reason (Optional)")
+          .setStyle(TextInputStyle.Paragraph) // Multi-line text box
+          .setRequired(false) // Make it optional
+          .setMaxLength(500)
+          .setPlaceholder(`Why are you ${action === 'kick' ? 'kicking' : 'banning'} this user?`);
+
+        // 3. Add the text input to an action row, then to the modal
+        const actionRow = new ActionRowBuilder().addComponents(reasonInput);
+        modal.addComponents(actionRow);
+
+        // 4. Show the modal to the staff member
+        return await interaction.showModal(modal);
       }
 
-      // Remove the join alert (buttons and embed)
-      await interaction.message.delete().catch(() => {});
-      if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
+      // ── Snake game buttons ─────────────────────────────────────────────────────
+      const snakeButtons = ['snake_up', 'snake_down', 'snake_left', 'snake_right', 'snake_stop'];
+      if (snakeButtons.includes(customId)) {
+        const game = client.snakeGames?.get(interaction.message.id);
+        if (!game) {
+          return interaction.reply({
+            content: '❌ This game has expired. Type `play snake` to start a new one!',
+            ephemeral: true,
+          });
+        }
 
-      // Post confirmation and delete after 30s
-      const emoji = action === 'kick' ? '👢' : '🔨';
-      const label = action === 'kick' ? 'Kicked' : 'Banned';
-      const colour = action === 'kick' ? 0xfee75c : 0xed4245;
+        // Only the player who started can steer
+        if (interaction.user.id !== game.userId) {
+          return interaction.reply({
+            content: '❌ Only the player who started this game can control it!',
+            ephemeral: true,
+          });
+        }
 
-      const { EmbedBuilder } = await import('discord.js');
-      const confirmEmbed = new EmbedBuilder()
-        .setTitle(`${emoji} Member ${label}`)
-        .setDescription(`**${target.user.tag}** has been ${label.toLowerCase()} by ${interaction.user}.`)
-        .setColor(colour)
-        .setTimestamp();
+        // Stop button — clear the interval and end the game
+        if (customId === 'snake_stop') {
+          clearInterval(game.intervalId);
+          client.snakeGames.delete(interaction.message.id);
+          return interaction.update({
+            embeds: [buildEmbed(game, true)],
+            components: [],
+          });
+        }
 
-      const confirmMsg = await interaction.channel.send({ embeds: [confirmEmbed] });
-      setTimeout(() => confirmMsg.delete().catch(() => {}), 30_000);
+        // Queue the new direction — the interval will apply it on the next tick
+        const dir = customId.replace('snake_', '');
+        queueDirection(game, dir);
 
-      return interaction.deferUpdate().catch(() => {});
+        // Acknowledge the button press silently
+        return await interaction.deferUpdate();
+      }
     }
 
-    // ── Snake game buttons ─────────────────────────────────────────────────────
-    const snakeButtons = ['snake_up', 'snake_down', 'snake_left', 'snake_right', 'snake_stop'];
-    if (!snakeButtons.includes(customId)) return;
+    // ════════════════════════════════════════════════════════════════════════════
+    // 📝 MODAL SUBMIT INTERACTIONS
+    // ════════════════════════════════════════════════════════════════════════════
+    if (interaction.isModalSubmit()) {
+      const { customId } = interaction;
 
-    const game = client.snakeGames?.get(interaction.message.id);
-    if (!game) {
-      return interaction.reply({
-        content: '❌ This game has expired. Type `play snake` to start a new one!',
-        ephemeral: true,
-      });
+      if (customId.startsWith('modal_verify_kick_') || customId.startsWith('modal_verify_ban_')) {
+        const action   = customId.startsWith('modal_verify_kick_') ? 'kick' : 'ban';
+        const memberId = customId.replace(`modal_verify_${action}_`, '');
+        
+        // Get the reason from the modal, or set a default if left blank
+        let reason = interaction.fields.getTextInputValue('reason_input').trim();
+        if (!reason) reason = 'No reason provided by staff.';
+
+        let target;
+        try {
+          target = await interaction.guild.members.fetch(memberId);
+        } catch {
+          // Member already left — just clean up the alert message
+          await interaction.message?.delete().catch(() => {});
+          if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
+          return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
+        }
+
+        // 1. DM the user BEFORE kicking/banning them
+        const dmEmbed = new EmbedBuilder()
+          .setTitle(`You were ${action === 'kick' ? 'kicked from' : 'banned from'} ${interaction.guild.name}`)
+          .setColor(action === 'kick' ? 0xfee75c : 0xed4245)
+          .addFields({ name: 'Reason', value: reason })
+          .setTimestamp();
+
+        try {
+          await target.send({ embeds: [dmEmbed] });
+        } catch (err) {
+          console.log(`[VERIFY] Could not DM user ${target.user.tag} (They might have DMs off).`);
+        }
+
+        // 2. Execute the Kick or Ban
+        try {
+          const auditLogReason = `[Verification] ${action === 'kick' ? 'Kicked' : 'Banned'} by ${interaction.user.tag} | Reason: ${reason}`;
+          if (action === 'kick') {
+            await target.kick(auditLogReason);
+          } else {
+            await target.ban({ reason: auditLogReason });
+          }
+        } catch (err) {
+          return interaction.reply({ content: `❌ Failed to ${action} the member. Check my role position.`, ephemeral: true });
+        }
+
+        // 3. Remove the original join alert message
+        if (interaction.message) await interaction.message.delete().catch(() => {});
+        if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
+
+        // 4. Post confirmation in the channel and delete it after 30s
+        const emoji = action === 'kick' ? '👢' : '🔨';
+        const label = action === 'kick' ? 'Kicked' : 'Banned';
+        const colour = action === 'kick' ? 0xfee75c : 0xed4245;
+
+        const confirmEmbed = new EmbedBuilder()
+          .setTitle(`${emoji} Member ${label}`)
+          .setDescription(`**${target.user.tag}** has been ${label.toLowerCase()} by ${interaction.user}.\n**Reason:** ${reason}`)
+          .setColor(colour)
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [confirmEmbed] });
+        setTimeout(async () => {
+          await interaction.deleteReply().catch(() => {});
+        }, 30_000);
+      }
     }
-
-    // Only the player who started can steer
-    if (interaction.user.id !== game.userId) {
-      return interaction.reply({
-        content: '❌ Only the player who started this game can control it!',
-        ephemeral: true,
-      });
-    }
-
-    // Stop button — clear the interval and end the game
-    if (customId === 'snake_stop') {
-      clearInterval(game.intervalId);
-      client.snakeGames.delete(interaction.message.id);
-      return interaction.update({
-        embeds: [buildEmbed(game, true)],
-        components: [],
-      });
-    }
-
-    // Queue the new direction — the interval will apply it on the next tick
-    const dir = customId.replace('snake_', '');
-    queueDirection(game, dir);
-
-    // Acknowledge the button press silently (no visual update — the interval handles that)
-    await interaction.deferUpdate();
   },
 };
