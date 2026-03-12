@@ -23,7 +23,6 @@ export default {
           content: `❌ You can only use this command in <#${snakeChannelId}>!`
         });
         
-        // Delete both the user's command and the warning message after 5 seconds
         setTimeout(() => {
           warningMsg.delete().catch(() => {});
           message.delete().catch(() => {});
@@ -47,7 +46,6 @@ export default {
 
       const { step } = await import('../utils/snakeGame.js');
 
-      // ── Recursive loop to prevent API rate limit overlapping ───────────────
       const gameTick = async () => {
         if (game.gameOver) return;
 
@@ -64,7 +62,6 @@ export default {
           return;
         }
 
-        // Only attempt to edit if we aren't already waiting for Discord to process the last edit
         if (!game.isEditing) {
           game.isEditing = true;
           await sent.edit({
@@ -74,7 +71,6 @@ export default {
           game.isEditing = false;
         }
 
-        // Schedule next tick at 1.5 seconds (safe zone for Discord API)
         if (!game.gameOver) {
           game.timeoutId = setTimeout(gameTick, 1500);
         }
@@ -119,6 +115,18 @@ export default {
     }
 
     const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
+    
+    // ── Check if they actually have the unverified role ──────────────────────
+    if (!unverifiedRoleId) {
+      return message.reply({ content: '❌ The **UNVERIFIED_ROLE_ID** is not set in `.env`.' })
+        .then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
+    }
+
+    if (!targetMember.roles.cache.has(unverifiedRoleId)) {
+      return message.reply({ content: '❌ This user has already been verified!' })
+        .then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
+    }
+
     const associateRoleId  = process.env.ASSOCIATE_ROLE_ID;
     const outsiderRoleId   = process.env.OUTSIDER_ROLE_ID;
 
@@ -136,9 +144,7 @@ export default {
 
     try {
       await targetMember.roles.add([assignRoleId], `Verified as ${assignLabel} by ${message.author.tag}`);
-      if (unverifiedRoleId && targetMember.roles.cache.has(unverifiedRoleId)) {
-        await targetMember.roles.remove([unverifiedRoleId], 'Verification complete — unverified role removed');
-      }
+      await targetMember.roles.remove([unverifiedRoleId], 'Verification complete — unverified role removed');
     } catch (err) {
       console.error('[VERIFY] Role update failed:', err.message);
       return message.reply({
@@ -153,7 +159,7 @@ export default {
       .addFields(
         { name: 'Role Assigned', value: `<@&${assignRoleId}>`,                              inline: true },
         { name: 'Verified By',   value: `${message.member}`,                                inline: true },
-        { name: 'Role Removed',  value: unverifiedRoleId ? `<@&${unverifiedRoleId}>` : 'N/A', inline: true },
+        { name: 'Role Removed',  value: `<@&${unverifiedRoleId}>`,                          inline: true },
       )
       .setThumbnail(targetMember.user.displayAvatarURL({ dynamic: true }))
       .setTimestamp()
