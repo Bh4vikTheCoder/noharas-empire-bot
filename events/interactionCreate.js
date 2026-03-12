@@ -10,6 +10,21 @@ import {
 } from 'discord.js';
 import { queueDirection, renderBoard } from '../utils/snakeGame.js';
 
+// Helper Function: Parse Time Strings (e.g., 10m, 1h, 1d)
+function parseDuration(str) {
+  if (!str) return null;
+  const match = str.match(/^(\d+)(s|m|h|d)$/i);
+  if (!match) return null;
+  const val = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  
+  if (unit === 's') return val * 1000;
+  if (unit === 'm') return val * 60000;
+  if (unit === 'h') return val * 3600000;
+  if (unit === 'd') return val * 86400000;
+  return null;
+}
+
 export function buildControls() {
   const up    = new ButtonBuilder().setCustomId('snake_up')   .setEmoji('⬆️').setStyle(ButtonStyle.Primary);
   const down  = new ButtonBuilder().setCustomId('snake_down') .setEmoji('⬇️').setStyle(ButtonStyle.Primary);
@@ -67,6 +82,47 @@ export default {
     // ════════════════════════════════════════════════════════════════════════════
     if (interaction.isButton()) {
       const { customId } = interaction;
+
+      // ── MODERATOR POPUP GENERATOR ───────────────────────────────────────────
+      if (customId.startsWith('mod_')) {
+        const parts = customId.split('_');
+        const cmd = parts[1];
+        const targetId = parts[2];
+        const authorId = parts[3];
+
+        if (interaction.user.id !== authorId) {
+          return interaction.reply({ content: '❌ Only the person who ran the command can use this button.', ephemeral: true });
+        }
+
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_mod_${cmd}_${targetId}`)
+          .setTitle(`Details for ${cmd.toUpperCase()}`);
+
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('reason_input')
+          .setLabel("Reason")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(500)
+          .setPlaceholder(`Why are you issuing this ${cmd}?`);
+
+        // Warn doesn't need a duration
+        if (cmd !== 'warn') {
+          const durationInput = new TextInputBuilder()
+            .setCustomId('duration_input')
+            .setLabel("Duration (e.g., 10m, 1h, 1d)")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(10)
+            .setPlaceholder("Use s, m, h, or d");
+            
+          modal.addComponents(new ActionRowBuilder().addComponents(durationInput));
+        }
+
+        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+
+        return await interaction.showModal(modal);
+      }
 
       // ── Verify Prompt button ──────────────────────────────────────────────────
       if (customId.startsWith('verify_prompt_')) {
@@ -161,12 +217,96 @@ export default {
     if (interaction.isModalSubmit()) {
       const { customId } = interaction;
 
+      // ── MODERATOR POPUP SUBMIT ───────────────────────────────────────────
+      if (customId.startsWith('modal_mod_')) {
+        const parts = customId.split('_');
+        const cmd = parts[2];
+        const targetId = parts[3];
+        
+        const reason = interaction.fields.getTextInputValue('reason_input').trim();
+        let durationStr = 'N/A';
+        let ms = null;
+
+        if (cmd !== 'warn') {
+          durationStr = interaction.fields.getTextInputValue('duration_input').trim();
+          ms = parseDuration(durationStr);
+          if (!ms) {
+            return interaction.reply({ content: '❌ Invalid duration format! Use something like `10m`, `1h`, or `1d`.', ephemeral: true });
+          }
+        }
+
+        let targetMember;
+        try {
+          targetMember = await interaction.guild.members.fetch(targetId);
+        } catch {
+          await interaction.message?.delete().catch(() => {});
+          return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
+        }
+
+        // WARN LOGIC
+        if (cmd === 'warn') {
+          try {
+            await targetMember.send(`⚠️ You have been **warned** in **${interaction.guild.name}**.\n**Reason:** ${reason}`);
+          } catch {}
+
+          const embed = new EmbedBuilder()
+            .setTitle('⚠️ User Warned')
+            .setDescription(`**${targetMember.user.tag}** has been warned by ${interaction.user}.\n**Reason:** ${reason}`)
+            .setColor(0xfee75c)
+            .setTimestamp();
+          
+          await interaction.message?.delete().catch(() => {});
+          return interaction.reply({ embeds: [embed] });
+        }
+
+        // BAN / MUTE / KICK LOGIC
+        const dmEmbed = new EmbedBuilder()
+          .setTitle(`You were ${cmd}ed in ${interaction.guild.name}`)
+          .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
+          .addFields(
+            { name: 'Duration', value: durationStr, inline: true },
+            { name: 'Reason', value: reason, inline: true }
+          )
+          .setTimestamp();
+        
+        try { await targetMember.send({ embeds: [dmEmbed] }); } catch {}
+
+        try {
+          const auditReason = `[Manager ${cmd}] by ${interaction.user.tag} | Time: ${durationStr} | Reason: ${reason}`;
+          
+          if (cmd === 'mute') {
+            await targetMember.timeout(ms, auditReason);
+          } else if (cmd === 'kick') {
+            await targetMember.kick(auditReason);
+          } else if (cmd === 'ban') {
+            await targetMember.ban({ reason: auditReason });
+            setTimeout(() => {
+              interaction.guild.members.unban(targetMember.id, "Temp-ban duration expired").catch(() => {});
+            }, ms);
+          }
+        } catch (err) {
+          return interaction.reply({ content: `❌ Failed to ${cmd} the user. Check my role hierarchy.`, ephemeral: true });
+        }
+
+        const confirmEmbed = new EmbedBuilder()
+          .setTitle(`✅ User ${cmd.charAt(0).toUpperCase() + cmd.slice(1)}ed`)
+          .setDescription(`**${targetMember.user.tag}** has been ${cmd}ed by ${interaction.user}.`)
+          .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
+          .addFields(
+            { name: 'Duration', value: durationStr, inline: true },
+            { name: 'Reason', value: reason, inline: true }
+          )
+          .setTimestamp();
+
+        await interaction.message?.delete().catch(() => {});
+        return interaction.reply({ embeds: [confirmEmbed] });
+      }
+
       // ── Verify Prompt Submit ──────────────────────────────────────────────────
       if (customId.startsWith('modal_verify_prompt_')) {
         const memberId = customId.replace('modal_verify_prompt_', '');
         const roleChoice = interaction.fields.getTextInputValue('role_input').trim().toLowerCase();
 
-        // Validate the input
         if (roleChoice !== 'associate' && roleChoice !== 'outsider') {
           return interaction.reply({ 
             content: '❌ Invalid input. You must type exactly `associate` or `outsider`. Please click the Verify button and try again.', 
@@ -185,19 +325,12 @@ export default {
 
         const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
 
-        // Security check: Must hold the unverified role
         if (!unverifiedRoleId) {
-          return interaction.reply({
-            content: `❌ The **UNVERIFIED_ROLE_ID** is not set in \`.env\`.`,
-            ephemeral: true
-          });
+          return interaction.reply({ content: `❌ The **UNVERIFIED_ROLE_ID** is not set in \`.env\`.`, ephemeral: true });
         }
 
         if (!targetMember.roles.cache.has(unverifiedRoleId)) {
-          return interaction.reply({
-            content: '❌ This user has already been verified!',
-            ephemeral: true
-          });
+          return interaction.reply({ content: '❌ This user has already been verified!', ephemeral: true });
         }
 
         const isAssociate  = roleChoice === 'associate';
@@ -207,10 +340,7 @@ export default {
         const assignColour = isAssociate ? 0x57f287 : 0xfee75c;
 
         if (!assignRoleId) {
-          return interaction.reply({
-            content: `❌ The **${assignLabel}** role ID is not set in \`.env\`.`,
-            ephemeral: true
-          });
+          return interaction.reply({ content: `❌ The **${assignLabel}** role ID is not set in \`.env\`.`, ephemeral: true });
         }
 
         try {
@@ -218,10 +348,7 @@ export default {
           await targetMember.roles.remove([unverifiedRoleId], 'Verification complete');
         } catch (err) {
           console.error('[VERIFY] Role update failed:', err.message);
-          return interaction.reply({
-            content: '❌ Failed to update roles. Make sure my role is **above** the roles I need to assign in Server Settings → Roles.',
-            ephemeral: true
-          });
+          return interaction.reply({ content: '❌ Failed to update roles. Make sure my role is **above** the roles I need to assign in Server Settings → Roles.', ephemeral: true });
         }
 
         if (interaction.message) await interaction.message.delete().catch(() => {});
@@ -247,7 +374,7 @@ export default {
         return;
       }
 
-      // ── Kick / Ban Submit ──────────────────────────────────────────────────────
+      // ── Verify Kick / Ban Submit ──────────────────────────────────────────────────────
       if (customId.startsWith('modal_verify_kick_') || customId.startsWith('modal_verify_ban_')) {
         const action   = customId.startsWith('modal_verify_kick_') ? 'kick' : 'ban';
         const memberId = customId.replace(`modal_verify_${action}_`, '');
@@ -272,9 +399,7 @@ export default {
 
         try {
           await target.send({ embeds: [dmEmbed] });
-        } catch (err) {
-          console.log(`[VERIFY] Could not DM user ${target.user.tag} (They might have DMs off).`);
-        }
+        } catch (err) {}
 
         try {
           const auditLogReason = `[Verification] ${action === 'kick' ? 'Kicked' : 'Banned'} by ${interaction.user.tag} | Reason: ${reason}`;
