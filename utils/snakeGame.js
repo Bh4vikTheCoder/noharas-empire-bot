@@ -17,12 +17,13 @@ export function createGame(userId) {
   return {
     userId,
     snake,
-    dir:     { x: 1, y: 0 },   // currently moving right
-    nextDir: { x: 1, y: 0 },   // queued direction from button press
+    dir: { x: 1, y: 0 },       // currently moving right
+    inputQueue: [],            // queues multiple rapid button presses
     food: spawnFood(snake),
     score: 0,
     gameOver: false,
-    intervalId: null,           // setInterval handle — stored here so we can clear it
+    timeoutId: null,           // Switched from interval to timeout
+    isEditing: false,          // Prevents rate-limit pileups
   };
 }
 
@@ -37,7 +38,7 @@ function spawnFood(snake) {
   return pos;
 }
 
-// Called on button press — only updates the queued direction
+// Queues the direction instead of overwriting it
 export function queueDirection(game, input) {
   const dirMap = {
     up:    { x: 0,  y: -1 },
@@ -45,17 +46,32 @@ export function queueDirection(game, input) {
     left:  { x: -1, y:  0 },
     right: { x: 1,  y:  0 },
   };
-  const wanted    = dirMap[input];
-  const isReverse = wanted.x === -game.dir.x && wanted.y === -game.dir.y;
-  if (!isReverse) game.nextDir = wanted;
+  const wanted = dirMap[input];
+
+  // Figure out the last committed direction (either the last queued move or current dir)
+  const lastDir = game.inputQueue.length > 0 
+    ? game.inputQueue[game.inputQueue.length - 1] 
+    : game.dir;
+
+  const isReverse = wanted.x === -lastDir.x && wanted.y === -lastDir.y;
+
+  // Don't allow reversing, and don't allow duplicate consecutive inputs
+  if (!isReverse && (wanted.x !== lastDir.x || wanted.y !== lastDir.y)) {
+    // Limit queue to 3 to prevent someone spamming 50 clicks and breaking it
+    if (game.inputQueue.length < 3) {
+      game.inputQueue.push(wanted);
+    }
+  }
 }
 
-// Called by the interval — advances the snake one step
+// Advances the snake one step
 export function step(game) {
   if (game.gameOver) return;
 
-  // Apply queued direction
-  game.dir = game.nextDir;
+  // Pull the oldest input from the queue
+  if (game.inputQueue.length > 0) {
+    game.dir = game.inputQueue.shift();
+  }
 
   const head    = game.snake[0];
   const newHead = { x: head.x + game.dir.x, y: head.y + game.dir.y };
