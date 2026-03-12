@@ -3,7 +3,6 @@ import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'disc
 import { createGame }   from '../utils/snakeGame.js';
 import { buildEmbed, buildControls } from './interactionCreate.js';
 
-// ── Helper Function: Parse Time Strings (e.g., 10m, 1h, 1d) ───────────────
 function parseDuration(str) {
   if (!str) return null;
   const match = str.match(/^(\d+)(s|m|h|d)$/i);
@@ -33,19 +32,12 @@ export default {
       const snakeChannelId = process.env.SNAKE_CHANNEL_ID;
 
       if (snakeChannelId && message.channel.id !== snakeChannelId) {
-        const warningMsg = await message.reply({
-          content: `❌ You can only use this command in <#${snakeChannelId}>!`
-        });
-        
-        setTimeout(() => {
-          warningMsg.delete().catch(() => {});
-          message.delete().catch(() => {});
-        }, 5000);
+        const warningMsg = await message.reply({ content: `❌ You can only use this command in <#${snakeChannelId}>!` });
+        setTimeout(() => { warningMsg.delete().catch(() => {}); message.delete().catch(() => {}); }, 5000);
         return;
       }
 
       await message.delete().catch(() => {});
-
       const game = createGame(message.author.id);
 
       const sent = await message.channel.send({
@@ -61,7 +53,6 @@ export default {
 
       const gameTick = async () => {
         if (game.gameOver) return;
-
         step(game);
 
         if (game.gameOver) {
@@ -84,9 +75,7 @@ export default {
           game.isEditing = false;
         }
 
-        if (!game.gameOver) {
-          game.timeoutId = setTimeout(gameTick, 1500);
-        }
+        if (!game.gameOver) game.timeoutId = setTimeout(gameTick, 1500);
       };
 
       game.timeoutId = setTimeout(gameTick, 1500);
@@ -104,12 +93,8 @@ export default {
       const match   = content.match(pattern);
 
       if (!match) {
-        return message.reply({
-          content:
-            '⚠️ **Invalid format.** Correct usage:\n' +
-            '`verify @user associate`\n' +
-            '`verify @user outsider`',
-        }).then(msg => setTimeout(() => msg.delete().catch(() => {}), 8000));
+        return message.reply({ content: '⚠️ **Invalid format.** Correct usage:\n`verify @user associate`\n`verify @user outsider`' })
+          .then(msg => setTimeout(() => msg.delete().catch(() => {}), 8000));
       }
 
       const [, targetId, roleKeyword] = match;
@@ -120,47 +105,29 @@ export default {
       }
 
       let targetMember;
-      try {
-        targetMember = await message.guild.members.fetch(targetId);
-      } catch {
+      try { targetMember = await message.guild.members.fetch(targetId); } catch {
         return message.reply({ content: '❌ Could not find that member. Are they still in the server?' });
       }
 
       const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
-      
-      if (!unverifiedRoleId) {
-        return message.reply({ content: '❌ The **UNVERIFIED_ROLE_ID** is not set in `.env`.' })
-          .then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
-      }
-
-      if (!targetMember.roles.cache.has(unverifiedRoleId)) {
-        return message.reply({ content: '❌ This user has already been verified!' })
-          .then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
-      }
+      if (!unverifiedRoleId) return message.reply({ content: '❌ The **UNVERIFIED_ROLE_ID** is not set.' }).then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
+      if (!targetMember.roles.cache.has(unverifiedRoleId)) return message.reply({ content: '❌ This user has already been verified!' }).then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
 
       const associateRoleId  = process.env.ASSOCIATE_ROLE_ID;
       const outsiderRoleId   = process.env.OUTSIDER_ROLE_ID;
-
       const isAssociate  = roleKeyword.toLowerCase() === 'associate';
       const assignRoleId = isAssociate ? associateRoleId : outsiderRoleId;
       const assignLabel  = isAssociate ? 'Associate' : 'Outsider';
       const assignEmoji  = isAssociate ? '🤝' : '👤';
       const assignColour = isAssociate ? 0x57f287 : 0xfee75c;
 
-      if (!assignRoleId) {
-        return message.reply({
-          content: `❌ The **${assignLabel}** role ID is not set in \`.env\` (${isAssociate ? 'ASSOCIATE_ROLE_ID' : 'OUTSIDER_ROLE_ID'}).`,
-        });
-      }
+      if (!assignRoleId) return message.reply({ content: `❌ The **${assignLabel}** role ID is not set.` });
 
       try {
         await targetMember.roles.add([assignRoleId], `Verified as ${assignLabel} by ${message.author.tag}`);
-        await targetMember.roles.remove([unverifiedRoleId], 'Verification complete — unverified role removed');
+        await targetMember.roles.remove([unverifiedRoleId], 'Verification complete');
       } catch (err) {
-        console.error('[VERIFY] Role update failed:', err.message);
-        return message.reply({
-          content: '❌ Failed to update roles. Make sure my role is **above** the roles I need to assign in Server Settings → Roles.',
-        });
+        return message.reply({ content: '❌ Failed to update roles. Make sure my role is high enough.' });
       }
 
       const embed = new EmbedBuilder()
@@ -178,7 +145,6 @@ export default {
 
       const successMsg = await message.channel.send({ embeds: [embed] });
       setTimeout(() => successMsg.delete().catch(() => {}), 30_000);
-
       setTimeout(() => message.delete().catch(() => {}), 30_000);
 
       if (client.pendingVerifications?.has(targetMember.id)) {
@@ -206,8 +172,8 @@ export default {
 
       // ── UNMUTE COMMAND ────────────────────────────────────────────────────────
       if (cmd === 'unmute') {
-        // Fetch members to ensure cache is populated
-        await message.guild.members.fetch();
+        // Safe fetch: Gets members without triggering rate limit crash
+        await message.guild.members.fetch().catch(() => {});
         const mutedMembers = message.guild.members.cache.filter(m => m.isCommunicationDisabled());
 
         const listStr = mutedMembers.size > 0 
@@ -233,14 +199,11 @@ export default {
         );
 
         const replyMsg = await message.reply({ embeds: [embed], components: [row] });
-
-        // Auto-delete both the command and the response after 25s
         setTimeout(() => message.delete().catch(() => {}), 25000);
         setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
         return;
       }
 
-      // Everything else requires a target
       const targetArg = args.shift();
       if (!targetArg) {
         return message.reply(`⚠️ Please specify a user to moderate (e.g., \`manager ${cmd} username\`).`)
@@ -248,7 +211,6 @@ export default {
       }
 
       let targetMember;
-      
       const targetMatch = targetArg.match(/^<@!?(\d+)>$/);
       const possibleId = targetMatch ? targetMatch[1] : targetArg;
 
@@ -268,14 +230,9 @@ export default {
           .then(msg => setTimeout(() => msg.delete().catch(() => {}), 5000));
       }
 
-      // Safety checks
       if (cmd !== 'userinfo') {
-        if (targetMember.id === message.author.id) {
-          return message.reply('❌ You cannot moderate yourself!');
-        }
-        if (message.member.roles.highest.position <= targetMember.roles.highest.position) {
-          return message.reply('❌ You cannot moderate a member with an equal or higher role than you.');
-        }
+        if (targetMember.id === message.author.id) return message.reply('❌ You cannot moderate yourself!');
+        if (message.member.roles.highest.position <= targetMember.roles.highest.position) return message.reply('❌ You cannot moderate a member with an equal or higher role than you.');
       }
 
       // ── USERINFO
@@ -302,12 +259,10 @@ export default {
         return message.reply({ embeds: [embed] });
       }
 
-      // ── HYBRID LOGIC: INSTANT EXECUTION ──
+      // ── HYBRID LOGIC: INSTANT EXECUTION
       if (cmd === 'warn' && args.length > 0) {
         const reason = args.join(' ');
-        
         try { await targetMember.send(`⚠️ You have been **warned** in **${message.guild.name}**.\n**Reason:** ${reason}`); } catch {}
-
         const embed = new EmbedBuilder()
           .setTitle('⚠️ User Warned')
           .setDescription(`**${targetMember.user.tag}** has been warned by ${message.author}.\n**Reason:** ${reason}`)
@@ -326,7 +281,6 @@ export default {
         
         if (ms) {
           const reason = args.slice(1).join(' ');
-
           const dmEmbed = new EmbedBuilder()
             .setTitle(`You were ${cmd}ed in ${message.guild.name}`)
             .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
@@ -347,7 +301,7 @@ export default {
               setTimeout(() => { message.guild.members.unban(targetMember.id).catch(() => {}); }, ms);
             }
           } catch (err) {
-            return message.reply(`❌ Failed to ${cmd} the user. Check my role hierarchy in Server Settings.`);
+            return message.reply(`❌ Failed to ${cmd} the user.`);
           }
 
           const confirmEmbed = new EmbedBuilder()
@@ -367,7 +321,7 @@ export default {
         }
       }
 
-      // ── HYBRID LOGIC: BUTTON FALLBACK ──
+      // ── HYBRID LOGIC: BUTTON FALLBACK
       const customId = `mod_${cmd}_${targetMember.id}_${message.author.id}`;
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -382,7 +336,6 @@ export default {
         components: [row]
       });
 
-      // Also Auto-delete the prompt after 25s
       setTimeout(() => message.delete().catch(() => {}), 25000);
       setTimeout(() => promptMsg.delete().catch(() => {}), 25000);
     }
