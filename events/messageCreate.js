@@ -1,22 +1,7 @@
 // src/events/messageCreate.js
-import { EmbedBuilder } from 'discord.js';
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { createGame }   from '../utils/snakeGame.js';
 import { buildEmbed, buildControls } from './interactionCreate.js';
-
-// ── Helper Function: Parse Time Strings (e.g., 10m, 1h, 1d) ───────────────
-function parseDuration(str) {
-  if (!str) return null;
-  const match = str.match(/^(\d+)(s|m|h|d)$/i);
-  if (!match) return null;
-  const val = parseInt(match[1]);
-  const unit = match[2].toLowerCase();
-  
-  if (unit === 's') return val * 1000;
-  if (unit === 'm') return val * 60000;
-  if (unit === 'h') return val * 3600000;
-  if (unit === 'd') return val * 86400000;
-  return null;
-}
 
 export default {
   name: 'messageCreate',
@@ -32,7 +17,6 @@ export default {
     if (lower === 'play snake') {
       const snakeChannelId = process.env.SNAKE_CHANNEL_ID;
 
-      // ── Channel Lock Check ─────────────────────────────────────────────────────
       if (snakeChannelId && message.channel.id !== snakeChannelId) {
         const warningMsg = await message.reply({
           content: `❌ You can only use this command in <#${snakeChannelId}>!`
@@ -42,7 +26,6 @@ export default {
           warningMsg.delete().catch(() => {});
           message.delete().catch(() => {});
         }, 5000);
-        
         return;
       }
 
@@ -196,13 +179,11 @@ export default {
     // 🛡️  MANAGER COMMANDS (Mod Suite)
     // ════════════════════════════════════════════════════════════════════════════
     if (lower.startsWith('manager ')) {
-      // Must have Moderate Members or Manage Roles to use this suite
       if (!message.member.permissions.has('ModerateMembers') && !message.member.permissions.has('ManageRoles')) {
         return message.reply({ content: '❌ You need Staff permissions to use manager commands.' })
           .then(msg => setTimeout(() => msg.delete().catch(() => {}), 6000));
       }
 
-      // Split arguments: "manager ban @user 1d reason" -> ['ban', '<@123>', '1d', 'reason']
       const args = content.slice(8).trim().split(/\s+/);
       const cmd = args.shift()?.toLowerCase();
 
@@ -210,10 +191,9 @@ export default {
 
       const targetArg = args.shift();
       if (!targetArg) {
-        return message.reply('⚠️ Please specify a user to moderate (e.g., `manager userinfo @user`).');
+        return message.reply(`⚠️ Please specify a user to moderate (e.g., \`manager ${cmd} @user\`).`);
       }
 
-      // Extract raw ID if they used a mention
       const targetMatch = targetArg.match(/^<@!?(\d+)>$/);
       const targetId = targetMatch ? targetMatch[1] : targetArg;
       
@@ -224,7 +204,7 @@ export default {
         return message.reply('❌ Could not find that member. Ensure they are in the server.');
       }
 
-      // Safety checks: Cannot moderate self or higher-ranked staff
+      // Safety checks
       if (cmd !== 'userinfo') {
         if (targetMember.id === message.author.id) {
           return message.reply('❌ You cannot moderate yourself!');
@@ -234,7 +214,7 @@ export default {
         }
       }
 
-      // ── COMMAND: USERINFO ────────────────────────────────────────────────────
+      // ── USERINFO (Bypasses the popup)
       if (cmd === 'userinfo') {
         const roles = targetMember.roles.cache
           .filter(r => r.id !== message.guild.id)
@@ -258,80 +238,25 @@ export default {
         return message.reply({ embeds: [embed] });
       }
 
-      // ── COMMAND: WARN ────────────────────────────────────────────────────────
-      if (cmd === 'warn') {
-        const reason = args.join(' ');
-        if (!reason) return message.reply('⚠️ Correct usage: `manager warn @user <reason>`');
-
-        try {
-          await targetMember.send(`⚠️ You have been **warned** in **${message.guild.name}**.\n**Reason:** ${reason}`);
-        } catch {
-          // Ignore if DMs are closed
-        }
-
-        const embed = new EmbedBuilder()
-          .setTitle('⚠️ User Warned')
-          .setDescription(`**${targetMember.user.tag}** has been warned by ${message.author}.\n**Reason:** ${reason}`)
-          .setColor(0xfee75c)
-          .setTimestamp();
-        
-        return message.reply({ embeds: [embed] });
-      }
-
-      // ── COMMANDS: BAN, KICK, MUTE ───────────────────────────────────────────
-      const durationStr = args.shift();
-      const ms = parseDuration(durationStr);
-      const reason = args.join(' ');
-
-      if (!ms || !reason) {
-        return message.reply(`⚠️ Correct usage: \`manager ${cmd} @user <duration> <reason>\`\nExample: \`manager ${cmd} @user 1d Spamming chat\``);
-      }
-
-      // Pre-DM the user before they are removed or muted
-      const dmEmbed = new EmbedBuilder()
-        .setTitle(`You were ${cmd}ed in ${message.guild.name}`)
-        .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
-        .addFields(
-          { name: 'Duration', value: durationStr, inline: true },
-          { name: 'Reason', value: reason, inline: true }
-        )
-        .setTimestamp();
+      // ── Trigger the Setup Button for Ban, Warn, Mute, Kick
+      // Custom ID format: mod_cmd_targetId_authorId
+      const customId = `mod_${cmd}_${targetMember.id}_${message.author.id}`;
       
-      try {
-        await targetMember.send({ embeds: [dmEmbed] });
-      } catch {}
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(customId)
+          .setLabel(`Provide Details for ${cmd.toUpperCase()}`)
+          .setEmoji('📝')
+          .setStyle(ButtonStyle.Primary)
+      );
 
-      // Execute Action
-      try {
-        const auditReason = `[Manager ${cmd}] by ${message.author.tag} | Time: ${durationStr} | Reason: ${reason}`;
-        
-        if (cmd === 'mute') {
-          await targetMember.timeout(ms, auditReason);
-        } else if (cmd === 'kick') {
-          await targetMember.kick(auditReason);
-        } else if (cmd === 'ban') {
-          await targetMember.ban({ reason: auditReason });
-          // Schedule Unban for Temp-Ban
-          setTimeout(() => {
-            message.guild.members.unban(targetMember.id, "Temp-ban duration expired").catch(() => {});
-          }, ms);
-        }
-      } catch (err) {
-        return message.reply(`❌ Failed to ${cmd} the user. Check my role hierarchy in Server Settings.`);
-      }
+      const promptMsg = await message.reply({
+        content: `**${message.author}**, click the button below to fill out the reason ${cmd !== 'warn' ? 'and duration ' : ''}for this action.`,
+        components: [row]
+      });
 
-      // Send Public Confirmation
-      const confirmEmbed = new EmbedBuilder()
-        .setTitle(`✅ User ${cmd.charAt(0).toUpperCase() + cmd.slice(1)}ed`)
-        .setDescription(`**${targetMember.user.tag}** has been ${cmd}ed by ${message.author}.`)
-        .setColor(cmd === 'ban' ? 0xed4245 : (cmd === 'kick' ? 0xe67e22 : 0x95a5a6))
-        .addFields(
-          { name: 'Duration', value: durationStr, inline: true },
-          { name: 'Reason', value: reason, inline: true }
-        )
-        .setTimestamp();
-
-      return message.reply({ embeds: [confirmEmbed] });
+      // Cleanup the prompt if they don't click it within 60 seconds
+      setTimeout(() => promptMsg.delete().catch(() => {}), 60000);
     }
   },
 };
