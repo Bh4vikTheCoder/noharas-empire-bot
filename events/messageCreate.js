@@ -202,26 +202,60 @@ export default {
       const args = content.slice(8).trim().split(/\s+/);
       const cmd = args.shift()?.toLowerCase();
 
-      if (!['ban', 'warn', 'mute', 'kick', 'userinfo'].includes(cmd)) return;
+      if (!['ban', 'warn', 'mute', 'kick', 'userinfo', 'unmute'].includes(cmd)) return;
 
+      // ── UNMUTE COMMAND ────────────────────────────────────────────────────────
+      if (cmd === 'unmute') {
+        // Fetch members to ensure cache is populated
+        await message.guild.members.fetch();
+        const mutedMembers = message.guild.members.cache.filter(m => m.isCommunicationDisabled());
+
+        const listStr = mutedMembers.size > 0 
+          ? mutedMembers.map(m => `• **${m.user.tag}**`).join('\n')
+          : 'Nobody is currently muted.';
+
+        const embed = new EmbedBuilder()
+          .setTitle('🔇 Muted Users List')
+          .setDescription(listStr)
+          .setColor(0x95a5a6)
+          .setTimestamp();
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`unmute_prompt_${message.author.id}`)
+            .setLabel('Unmute User')
+            .setEmoji('🔊')
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(`unmute_cancel_${message.author.id}`)
+            .setLabel('Cancel Action')
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        const replyMsg = await message.reply({ embeds: [embed], components: [row] });
+
+        // Auto-delete both the command and the response after 25s
+        setTimeout(() => message.delete().catch(() => {}), 25000);
+        setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
+        return;
+      }
+
+      // Everything else requires a target
       const targetArg = args.shift();
       if (!targetArg) {
-        return message.reply(`⚠️ Please specify a user to moderate (e.g., \`manager ${cmd} username\`).`);
+        return message.reply(`⚠️ Please specify a user to moderate (e.g., \`manager ${cmd} username\`).`)
+          .then(msg => setTimeout(() => msg.delete().catch(() => {}), 5000));
       }
 
       let targetMember;
       
-      // 1. Check if the input is a Mention or an ID
       const targetMatch = targetArg.match(/^<@!?(\d+)>$/);
       const possibleId = targetMatch ? targetMatch[1] : targetArg;
 
       if (/^\d{17,19}$/.test(possibleId)) {
-        try {
-          targetMember = await message.guild.members.fetch(possibleId);
-        } catch {} // If not found by ID, it will drop down to search
+        try { targetMember = await message.guild.members.fetch(possibleId); } catch {} 
       }
 
-      // 2. If it wasn't an ID (or ID failed), search by Username / Display Name
       if (!targetMember) {
         try {
           const searchResults = await message.guild.members.fetch({ query: targetArg, limit: 1 });
@@ -229,9 +263,9 @@ export default {
         } catch {}
       }
 
-      // 3. If STILL not found, throw error
       if (!targetMember) {
-        return message.reply('❌ Could not find that member. Ensure they are in the server. Try using their exact username (without spaces) or mentioning them.');
+        return message.reply('❌ Could not find that member. Ensure they are in the server.')
+          .then(msg => setTimeout(() => msg.delete().catch(() => {}), 5000));
       }
 
       // Safety checks
@@ -244,7 +278,7 @@ export default {
         }
       }
 
-      // ── USERINFO (Bypasses the popup)
+      // ── USERINFO
       if (cmd === 'userinfo') {
         const roles = targetMember.roles.cache
           .filter(r => r.id !== message.guild.id)
@@ -269,15 +303,10 @@ export default {
       }
 
       // ── HYBRID LOGIC: INSTANT EXECUTION ──
-      // If they provided the required arguments in the text command, skip the popup!
-      
-      // Warn: Needs at least 1 extra argument (the reason)
       if (cmd === 'warn' && args.length > 0) {
         const reason = args.join(' ');
         
-        try {
-          await targetMember.send(`⚠️ You have been **warned** in **${message.guild.name}**.\n**Reason:** ${reason}`);
-        } catch {}
+        try { await targetMember.send(`⚠️ You have been **warned** in **${message.guild.name}**.\n**Reason:** ${reason}`); } catch {}
 
         const embed = new EmbedBuilder()
           .setTitle('⚠️ User Warned')
@@ -285,15 +314,16 @@ export default {
           .setColor(0xfee75c)
           .setTimestamp();
         
-        return message.reply({ embeds: [embed] });
+        const replyMsg = await message.reply({ embeds: [embed] });
+        setTimeout(() => message.delete().catch(() => {}), 25000);
+        setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
+        return;
       }
 
-      // Ban / Mute / Kick: Needs at least 2 extra arguments (duration and reason)
       if (['ban', 'mute', 'kick'].includes(cmd) && args.length >= 2) {
         const durationStr = args[0];
         const ms = parseDuration(durationStr);
         
-        // Only proceed instantly if they provided a valid duration format
         if (ms) {
           const reason = args.slice(1).join(' ');
 
@@ -310,16 +340,11 @@ export default {
 
           try {
             const auditReason = `[Manager ${cmd}] by ${message.author.tag} | Time: ${durationStr} | Reason: ${reason}`;
-            
-            if (cmd === 'mute') {
-              await targetMember.timeout(ms, auditReason);
-            } else if (cmd === 'kick') {
-              await targetMember.kick(auditReason);
-            } else if (cmd === 'ban') {
+            if (cmd === 'mute') await targetMember.timeout(ms, auditReason);
+            else if (cmd === 'kick') await targetMember.kick(auditReason);
+            else if (cmd === 'ban') {
               await targetMember.ban({ reason: auditReason });
-              setTimeout(() => {
-                message.guild.members.unban(targetMember.id, "Temp-ban duration expired").catch(() => {});
-              }, ms);
+              setTimeout(() => { message.guild.members.unban(targetMember.id).catch(() => {}); }, ms);
             }
           } catch (err) {
             return message.reply(`❌ Failed to ${cmd} the user. Check my role hierarchy in Server Settings.`);
@@ -335,16 +360,15 @@ export default {
             )
             .setTimestamp();
 
-          return message.reply({ embeds: [confirmEmbed] });
+          const replyMsg = await message.reply({ embeds: [confirmEmbed] });
+          setTimeout(() => message.delete().catch(() => {}), 25000);
+          setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
+          return;
         }
       }
 
       // ── HYBRID LOGIC: BUTTON FALLBACK ──
-      // If we reach this point, it means they DID NOT provide full arguments, 
-      // so we send the button to open the popup instead!
-      
       const customId = `mod_${cmd}_${targetMember.id}_${message.author.id}`;
-      
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(customId)
@@ -354,11 +378,13 @@ export default {
       );
 
       const promptMsg = await message.reply({
-        content: `**${message.author}**, click the button below to fill out the reason ${cmd !== 'warn' ? 'and duration ' : ''}for this action.`,
+        content: `**${message.author}**, click the button below to fill out the details.`,
         components: [row]
       });
 
-      setTimeout(() => promptMsg.delete().catch(() => {}), 60000);
+      // Also Auto-delete the prompt after 25s
+      setTimeout(() => message.delete().catch(() => {}), 25000);
+      setTimeout(() => promptMsg.delete().catch(() => {}), 25000);
     }
   },
 };
