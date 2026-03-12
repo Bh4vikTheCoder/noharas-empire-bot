@@ -10,7 +10,7 @@ import {
 } from 'discord.js';
 import { queueDirection, renderBoard } from '../utils/snakeGame.js';
 
-// Helper Function: Parse Time Strings (e.g., 10m, 1h, 1d)
+// Helper Function: Parse Time Strings
 function parseDuration(str) {
   if (!str) return null;
   const match = str.match(/^(\d+)(s|m|h|d)$/i);
@@ -23,6 +23,11 @@ function parseDuration(str) {
   if (unit === 'h') return val * 3600000;
   if (unit === 'd') return val * 86400000;
   return null;
+}
+
+// Helper Function: Strip all special characters and spaces for smart fuzzy search
+function normalizeName(str) {
+  return str.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
 export function buildControls() {
@@ -83,6 +88,35 @@ export default {
     if (interaction.isButton()) {
       const { customId } = interaction;
 
+      // ── UNMUTE BUTTONS ───────────────────────────────────────────
+      if (customId.startsWith('unmute_cancel_')) {
+        const authorId = customId.replace('unmute_cancel_', '');
+        if (interaction.user.id !== authorId) return interaction.reply({ content: '❌ Not your command.', ephemeral: true });
+        
+        await interaction.message.delete().catch(() => {});
+        return;
+      }
+
+      if (customId.startsWith('unmute_prompt_')) {
+        const authorId = customId.replace('unmute_prompt_', '');
+        if (interaction.user.id !== authorId) return interaction.reply({ content: '❌ Not your command.', ephemeral: true });
+
+        const modal = new ModalBuilder()
+          .setCustomId('modal_unmute_search')
+          .setTitle('Unmute User');
+
+        const searchInput = new TextInputBuilder()
+          .setCustomId('search_input')
+          .setLabel("Who do you want to unmute?")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(32)
+          .setPlaceholder("Type their username here...");
+
+        modal.addComponents(new ActionRowBuilder().addComponents(searchInput));
+        return await interaction.showModal(modal);
+      }
+
       // ── MODERATOR POPUP GENERATOR ───────────────────────────────────────────
       if (customId.startsWith('mod_')) {
         const parts = customId.split('_');
@@ -106,7 +140,6 @@ export default {
           .setMaxLength(500)
           .setPlaceholder(`Why are you issuing this ${cmd}?`);
 
-        // Warn doesn't need a duration
         if (cmd !== 'warn') {
           const durationInput = new TextInputBuilder()
             .setCustomId('duration_input')
@@ -120,7 +153,6 @@ export default {
         }
 
         modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
-
         return await interaction.showModal(modal);
       }
 
@@ -144,17 +176,13 @@ export default {
           .setMaxLength(20)
           .setPlaceholder(`associate / outsider`);
 
-        const actionRow = new ActionRowBuilder().addComponents(roleInput);
-        modal.addComponents(actionRow);
-
+        modal.addComponents(new ActionRowBuilder().addComponents(roleInput));
         return await interaction.showModal(modal);
       }
 
       // ── Kick / Ban buttons ──────────────────────────────────────────────────────
       if (customId.startsWith('verify_kick_') || customId.startsWith('verify_ban_')) {
-        if (!interaction.member.permissions.has('ManageRoles')) {
-          return interaction.reply({ content: '❌ You need the **Manage Roles** permission to do this.', ephemeral: true });
-        }
+        if (!interaction.member.permissions.has('ManageRoles')) return interaction.reply({ content: '❌ You need the **Manage Roles** permission to do this.', ephemeral: true });
 
         const action   = customId.startsWith('verify_kick_') ? 'kick' : 'ban';
         const memberId = customId.replace(`verify_${action}_`, '');
@@ -171,42 +199,24 @@ export default {
           .setMaxLength(500)
           .setPlaceholder(`Why are you ${action === 'kick' ? 'kicking' : 'banning'} this user?`);
 
-        const actionRow = new ActionRowBuilder().addComponents(reasonInput);
-        modal.addComponents(actionRow);
-
+        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
         return await interaction.showModal(modal);
       }
 
       // ── Snake game buttons ─────────────────────────────────────────────────────
       if (['snake_up', 'snake_down', 'snake_left', 'snake_right', 'snake_stop'].includes(customId)) {
         const game = client.snakeGames?.get(interaction.message.id);
-        if (!game) {
-          return interaction.reply({
-            content: '❌ This game has expired. Type `play snake` to start a new one!',
-            ephemeral: true,
-          });
-        }
-
-        if (interaction.user.id !== game.userId) {
-          return interaction.reply({
-            content: '❌ Only the player who started this game can control it!',
-            ephemeral: true,
-          });
-        }
+        if (!game) return interaction.reply({ content: '❌ This game has expired.', ephemeral: true });
+        if (interaction.user.id !== game.userId) return interaction.reply({ content: '❌ Not your game!', ephemeral: true });
 
         if (customId === 'snake_stop') {
           game.gameOver = true;
           clearTimeout(game.timeoutId);
           client.snakeGames.delete(interaction.message.id);
-          return interaction.update({
-            embeds: [buildEmbed(game, true)],
-            components: [],
-          });
+          return interaction.update({ embeds: [buildEmbed(game, true)], components: [] });
         }
 
-        const dir = customId.replace('snake_', '');
-        queueDirection(game, dir);
-
+        queueDirection(game, customId.replace('snake_', ''));
         return await interaction.deferUpdate();
       }
     }
@@ -216,6 +226,47 @@ export default {
     // ════════════════════════════════════════════════════════════════════════════
     if (interaction.isModalSubmit()) {
       const { customId } = interaction;
+
+      // ── UNMUTE POPUP SUBMIT (FUZZY SEARCH) ──────────────────────────────────
+      if (customId === 'modal_unmute_search') {
+        const query = interaction.fields.getTextInputValue('search_input');
+        const searchNormalized = normalizeName(query);
+
+        await interaction.guild.members.fetch();
+        const mutedMembers = interaction.guild.members.cache.filter(m => m.isCommunicationDisabled());
+
+        // Fuzzy match logic: check if inputted stripped string exists in stripped username or display name
+        const targetMember = mutedMembers.find(m => 
+          normalizeName(m.user.username).includes(searchNormalized) || 
+          normalizeName(m.displayName).includes(searchNormalized)
+        );
+
+        if (!targetMember) {
+          return interaction.reply({ 
+            content: `❌ Could not find a currently muted user matching \`${query}\`.`, 
+            ephemeral: true 
+          });
+        }
+
+        try {
+          await targetMember.timeout(null, `Unmuted by ${interaction.user.tag}`);
+        } catch (err) {
+          return interaction.reply({ content: '❌ Failed to unmute. Check my role hierarchy.', ephemeral: true });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle('🔊 User Unmuted')
+          .setDescription(`**${targetMember.user.tag}** has been unmuted by ${interaction.user}.`)
+          .setColor(0x2ecc71)
+          .setTimestamp();
+
+        await interaction.message?.delete().catch(() => {});
+        const replyMsg = await interaction.reply({ embeds: [embed], fetchReply: true });
+        
+        // Auto-delete success embed after 25s
+        setTimeout(() => replyMsg.delete().catch(() => {}), 25000);
+        return;
+      }
 
       // ── MODERATOR POPUP SUBMIT ───────────────────────────────────────────
       if (customId.startsWith('modal_mod_')) {
@@ -245,9 +296,7 @@ export default {
 
         // WARN LOGIC
         if (cmd === 'warn') {
-          try {
-            await targetMember.send(`⚠️ You have been **warned** in **${interaction.guild.name}**.\n**Reason:** ${reason}`);
-          } catch {}
+          try { await targetMember.send(`⚠️ You have been **warned** in **${interaction.guild.name}**.\n**Reason:** ${reason}`); } catch {}
 
           const embed = new EmbedBuilder()
             .setTitle('⚠️ User Warned')
@@ -256,7 +305,9 @@ export default {
             .setTimestamp();
           
           await interaction.message?.delete().catch(() => {});
-          return interaction.reply({ embeds: [embed] });
+          const replyMsg = await interaction.reply({ embeds: [embed], fetchReply: true });
+          setTimeout(() => replyMsg.delete().catch(() => {}), 25000); // 25s delete
+          return;
         }
 
         // BAN / MUTE / KICK LOGIC
@@ -280,9 +331,7 @@ export default {
             await targetMember.kick(auditReason);
           } else if (cmd === 'ban') {
             await targetMember.ban({ reason: auditReason });
-            setTimeout(() => {
-              interaction.guild.members.unban(targetMember.id, "Temp-ban duration expired").catch(() => {});
-            }, ms);
+            setTimeout(() => { interaction.guild.members.unban(targetMember.id).catch(() => {}); }, ms);
           }
         } catch (err) {
           return interaction.reply({ content: `❌ Failed to ${cmd} the user. Check my role hierarchy.`, ephemeral: true });
@@ -299,7 +348,9 @@ export default {
           .setTimestamp();
 
         await interaction.message?.delete().catch(() => {});
-        return interaction.reply({ embeds: [confirmEmbed] });
+        const replyMsg = await interaction.reply({ embeds: [confirmEmbed], fetchReply: true });
+        setTimeout(() => replyMsg.delete().catch(() => {}), 25000); // 25s delete
+        return;
       }
 
       // ── Verify Prompt Submit ──────────────────────────────────────────────────
@@ -308,30 +359,19 @@ export default {
         const roleChoice = interaction.fields.getTextInputValue('role_input').trim().toLowerCase();
 
         if (roleChoice !== 'associate' && roleChoice !== 'outsider') {
-          return interaction.reply({ 
-            content: '❌ Invalid input. You must type exactly `associate` or `outsider`. Please click the Verify button and try again.', 
-            ephemeral: true 
-          });
+          return interaction.reply({ content: '❌ Invalid input. Type exactly `associate` or `outsider`.', ephemeral: true });
         }
 
         let targetMember;
-        try {
-          targetMember = await interaction.guild.members.fetch(memberId);
-        } catch {
+        try { targetMember = await interaction.guild.members.fetch(memberId); } catch {
           await interaction.message?.delete().catch(() => {});
-          if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
           return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
         }
 
         const unverifiedRoleId = process.env.UNVERIFIED_ROLE_ID;
 
-        if (!unverifiedRoleId) {
-          return interaction.reply({ content: `❌ The **UNVERIFIED_ROLE_ID** is not set in \`.env\`.`, ephemeral: true });
-        }
-
-        if (!targetMember.roles.cache.has(unverifiedRoleId)) {
-          return interaction.reply({ content: '❌ This user has already been verified!', ephemeral: true });
-        }
+        if (!unverifiedRoleId) return interaction.reply({ content: `❌ The **UNVERIFIED_ROLE_ID** is not set.`, ephemeral: true });
+        if (!targetMember.roles.cache.has(unverifiedRoleId)) return interaction.reply({ content: '❌ This user has already been verified!', ephemeral: true });
 
         const isAssociate  = roleChoice === 'associate';
         const assignRoleId = isAssociate ? process.env.ASSOCIATE_ROLE_ID : process.env.OUTSIDER_ROLE_ID;
@@ -339,16 +379,13 @@ export default {
         const assignEmoji  = isAssociate ? '🤝' : '👤';
         const assignColour = isAssociate ? 0x57f287 : 0xfee75c;
 
-        if (!assignRoleId) {
-          return interaction.reply({ content: `❌ The **${assignLabel}** role ID is not set in \`.env\`.`, ephemeral: true });
-        }
+        if (!assignRoleId) return interaction.reply({ content: `❌ The **${assignLabel}** role ID is not set.`, ephemeral: true });
 
         try {
           await targetMember.roles.add([assignRoleId], `Verified as ${assignLabel} by ${interaction.user.tag}`);
           await targetMember.roles.remove([unverifiedRoleId], 'Verification complete');
         } catch (err) {
-          console.error('[VERIFY] Role update failed:', err.message);
-          return interaction.reply({ content: '❌ Failed to update roles. Make sure my role is **above** the roles I need to assign in Server Settings → Roles.', ephemeral: true });
+          return interaction.reply({ content: '❌ Failed to update roles.', ephemeral: true });
         }
 
         if (interaction.message) await interaction.message.delete().catch(() => {});
@@ -368,9 +405,7 @@ export default {
           .setFooter({ text: `${interaction.guild.name} Verification System` });
 
         await interaction.reply({ embeds: [embed] });
-        setTimeout(async () => {
-          await interaction.deleteReply().catch(() => {});
-        }, 30_000);
+        setTimeout(async () => { await interaction.deleteReply().catch(() => {}); }, 30_000);
         return;
       }
 
@@ -379,15 +414,11 @@ export default {
         const action   = customId.startsWith('modal_verify_kick_') ? 'kick' : 'ban';
         const memberId = customId.replace(`modal_verify_${action}_`, '');
         
-        let reason = interaction.fields.getTextInputValue('reason_input').trim();
-        if (!reason) reason = 'No reason provided by staff.';
+        let reason = interaction.fields.getTextInputValue('reason_input').trim() || 'No reason provided by staff.';
 
         let target;
-        try {
-          target = await interaction.guild.members.fetch(memberId);
-        } catch {
+        try { target = await interaction.guild.members.fetch(memberId); } catch {
           await interaction.message?.delete().catch(() => {});
-          if (client.pendingVerifications) client.pendingVerifications.delete(memberId);
           return interaction.reply({ content: '⚠️ That member is no longer in the server.', ephemeral: true });
         }
 
@@ -397,19 +428,14 @@ export default {
           .addFields({ name: 'Reason', value: reason })
           .setTimestamp();
 
-        try {
-          await target.send({ embeds: [dmEmbed] });
-        } catch (err) {}
+        try { await target.send({ embeds: [dmEmbed] }); } catch (err) {}
 
         try {
           const auditLogReason = `[Verification] ${action === 'kick' ? 'Kicked' : 'Banned'} by ${interaction.user.tag} | Reason: ${reason}`;
-          if (action === 'kick') {
-            await target.kick(auditLogReason);
-          } else {
-            await target.ban({ reason: auditLogReason });
-          }
+          if (action === 'kick') await target.kick(auditLogReason);
+          else await target.ban({ reason: auditLogReason });
         } catch (err) {
-          return interaction.reply({ content: `❌ Failed to ${action} the member. Check my role position.`, ephemeral: true });
+          return interaction.reply({ content: `❌ Failed to ${action} the member.`, ephemeral: true });
         }
 
         if (interaction.message) await interaction.message.delete().catch(() => {});
@@ -426,9 +452,7 @@ export default {
           .setTimestamp();
 
         await interaction.reply({ embeds: [confirmEmbed] });
-        setTimeout(async () => {
-          await interaction.deleteReply().catch(() => {});
-        }, 30_000);
+        setTimeout(async () => { await interaction.deleteReply().catch(() => {}); }, 30_000);
       }
     }
   },
