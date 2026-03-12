@@ -15,6 +15,23 @@ export default {
     // 🐍  SNAKE GAME
     // ════════════════════════════════════════════════════════════════════════════
     if (lower === 'play snake') {
+      const snakeChannelId = process.env.SNAKE_CHANNEL_ID;
+
+      // ── Channel Lock Check ─────────────────────────────────────────────────────
+      if (snakeChannelId && message.channel.id !== snakeChannelId) {
+        const warningMsg = await message.reply({
+          content: `❌ You can only use this command in <#${snakeChannelId}>!`
+        });
+        
+        // Delete both the user's command and the warning message after 5 seconds
+        setTimeout(() => {
+          warningMsg.delete().catch(() => {});
+          message.delete().catch(() => {});
+        }, 5000);
+        
+        return;
+      }
+
       await message.delete().catch(() => {});
 
       const game = createGame(message.author.id);
