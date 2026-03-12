@@ -3,6 +3,21 @@ import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'disc
 import { createGame }   from '../utils/snakeGame.js';
 import { buildEmbed, buildControls } from './interactionCreate.js';
 
+// ── Helper Function: Parse Time Strings (e.g., 10m, 1h, 1d) ───────────────
+function parseDuration(str) {
+  if (!str) return null;
+  const match = str.match(/^(\d+)(s|m|h|d)$/i);
+  if (!match) return null;
+  const val = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  
+  if (unit === 's') return val * 1000;
+  if (unit === 'm') return val * 60000;
+  if (unit === 'h') return val * 3600000;
+  if (unit === 'd') return val * 86400000;
+  return null;
+}
+
 export default {
   name: 'messageCreate',
   async execute(message, client) {
@@ -191,17 +206,32 @@ export default {
 
       const targetArg = args.shift();
       if (!targetArg) {
-        return message.reply(`⚠️ Please specify a user to moderate (e.g., \`manager ${cmd} @user\`).`);
+        return message.reply(`⚠️ Please specify a user to moderate (e.g., \`manager ${cmd} username\`).`);
       }
 
-      const targetMatch = targetArg.match(/^<@!?(\d+)>$/);
-      const targetId = targetMatch ? targetMatch[1] : targetArg;
-      
       let targetMember;
-      try {
-        targetMember = await message.guild.members.fetch(targetId);
-      } catch {
-        return message.reply('❌ Could not find that member. Ensure they are in the server.');
+      
+      // 1. Check if the input is a Mention or an ID
+      const targetMatch = targetArg.match(/^<@!?(\d+)>$/);
+      const possibleId = targetMatch ? targetMatch[1] : targetArg;
+
+      if (/^\d{17,19}$/.test(possibleId)) {
+        try {
+          targetMember = await message.guild.members.fetch(possibleId);
+        } catch {} // If not found by ID, it will drop down to search
+      }
+
+      // 2. If it wasn't an ID (or ID failed), search by Username / Display Name
+      if (!targetMember) {
+        try {
+          const searchResults = await message.guild.members.fetch({ query: targetArg, limit: 1 });
+          targetMember = searchResults.first();
+        } catch {}
+      }
+
+      // 3. If STILL not found, throw error
+      if (!targetMember) {
+        return message.reply('❌ Could not find that member. Ensure they are in the server. Try using their exact username (without spaces) or mentioning them.');
       }
 
       // Safety checks
@@ -239,13 +269,12 @@ export default {
       }
 
       // ── Trigger the Setup Button for Ban, Warn, Mute, Kick
-      // Custom ID format: mod_cmd_targetId_authorId
       const customId = `mod_${cmd}_${targetMember.id}_${message.author.id}`;
       
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(customId)
-          .setLabel(`Provide Details for ${cmd.toUpperCase()}`)
+          .setLabel(`Provide Details for ${cmd.toUpperCase()} on ${targetMember.user.username}`)
           .setEmoji('📝')
           .setStyle(ButtonStyle.Primary)
       );
