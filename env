@@ -1,7 +1,7 @@
 # ============================================================
 #  Bot Credentials
 # ============================================================
-BOT_TOKEN=MTQ4MTM1NTcyMDc5NTYyMzYyNg.GnG1gC.rGSn0VTDL_3QtvARCXDXWDyXihFuqDlxbUycfk
+BOT_TOKEN=MTQ4MTM1NTcyMDc5NTYyMzYyNg.G6Nqc9.hstWHJw--5EQJFsk6zDm7W8SRmr7vni-ZIJ_ms
 
 # ============================================================
 #  Verification Channel
@@ -33,3 +33,4 @@ OUTSIDER_ROLE_ID=1236309721938395147
 #  Any member with the "Manage Roles" Discord permission.
 #  No extra role ID needed — set it directly in Server Settings → Roles.
 # ============================================================
+
